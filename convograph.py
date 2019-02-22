@@ -201,20 +201,185 @@ def build_inducido(g, node_label, edge_label):
 
     return h
     
-      
+def LoG(size,std):
+    
+    '''
+    Aquí se define el kernel de la convolución
+    '''
+    xs = sp.linspace(-size,size,size)
+    ys = sp.linspace(-size,size,size)
+    kernel = np.zeros((size,size))
+    X=[]
+    Y=[]
+    Z=[]
+    for i,x in enumerate(xs):
+        for j,y in enumerate(ys):
+            kernel[i][j]=(-(1.0/(np.pi*(std**4))))*(1-((x**2+y**2)/(2.0*(std**2))))*(np.e**(-((x**2+y**2)/(2.0*(std**2)))))
+            X.append(x)
+            Y.append(y)
+            Z.append(kernel[i][j])
+
+    fig=plt.figure(figsize=[15,10])
+   
+
+    ax=fig.gca(projection='3d')
+    ax.plot_trisurf(X,Y,Z,cmap=cm.coolwarm)
+    plt.title(u'Función kernel')
+    plt.show()
+    
+    
+#    lena = sp.misc.lena()
+#    val = sp.ndimage.filters.convolve(lena,kernel)
+#    thres = np.absolute(val).mean() * 0.75
+#    output = sp.zeros(val.shape)
+#    w = output.shape[1]
+#    h = output.shape[0]
+
+#    for y in range(1, h - 1):
+#        for x in range(1, w - 1):
+#            patch = val[y-1:y+2, x-1:x+2]
+#            p = val[y, x]
+#            maxP = patch.max()
+#            minP = patch.min()
+#            if (p > 0):
+#                zeroCross = True if minP < 0 else False
+#            else:
+#                zeroCross = True if maxP > 0 else False
+#            if ((maxP - minP) > thres) and zeroCross:
+#                output[y, x] = 1
+
+#    plt.imshow(lena)
+#    plt.show()
+#    plt.imshow(output)
+#    plt.show()
+    return kernel
+
+
+def grafo_filtrado(g,kernel):
+    '''
+    Aquí se realiza la convolución del grafo
+    '''    
+    
+    half_kern=len(kernel)/2
+    multipliers = [kernel[x+half_kern][half_kern] for x in range(half_kern+1)]
+    new_peso = g.new_vertex_property("double")
+    '''
+    El peso original es la diferencia entre los valores económicos de los nodos. Se genera un nuevo peso tras aplicar la
+    convolución, suavizando el peso original.
+    '''
+    
+    
+    for v in g.vertices():
+        acum = 0
+        to_expand = set()
+        to_expand.add(v)
+        visited =set()
+        visited.add(v)
+        level = 0
+        while(level<len(multipliers)):
+            to_expand_next_level = set()
+            while(len(to_expand)>0):
+                w = to_expand.pop()
+                acum += g.vp.peso[w]*multipliers[level]
+                for neighbour in w.all_neighbours():
+                    if(neighbour not in visited):
+                        visited.add(neighbour)
+                        to_expand_next_level.add(neighbour)
+            level += 1
+            to_expand=to_expand_next_level
+        new_peso[v]=acum
+    g.vp["new_peso"]=new_peso
+    texto = g.new_vertex_property("string")
+    for v in g.vertices():
+        texto[v]="{0:.2f}".format(new_peso[v])
+    gt.graph_draw(g,vertex_text=texto,vertex_size=8)
+    return g
+
+def get_tramas(g,h):
+    id_trama = g.new_edge_property("int")
+    id_trama_vert = g.new_vertex_property("int")
+    id_trama_pie_color = g.new_vertex_property("object")
+    id_trama_pie_prop = g.new_vertex_property("vector<float>",[])
+    colors = [[0.3,0.2,0.4,1.0],
+              [0.5,0.9,0.4,1.0],
+              [0.2,0.2,0.7,1.0],
+              [0.9,0.2,0.5,1.0],
+              [0.3,0.6,0.4,1.0],
+              [0.3,0.4,0.9,1.0],
+              [0.0,0.8,0.4,1.0],
+              [0.9,0.5,0.7,1.0],
+              [0.6,0.2,0.1,1.0],
+              [0.1,0.7,0.9,1.0],
+              [0.3,0.2,0.8,1.0],
+              [0.3,0.8,0.6,1.0],
+              ]
+
+    cur_trama = 0
+
+    # Primero sacamos las componentes conexas que tienen valores positivos
+    # Cada componente será "una trama"
+    hv = gt.GraphView(h.copy(),vfilt=lambda v:h.vp.new_peso[v]>=0,directed=False)
+    hv.purge_vertices()
+    hv.purge_edges()
+    labels = gt.label_components(hv)[0]
+    for label in np.unique(labels.a):
+        trama = gt.GraphView(hv.copy(),vfilt=lambda v:labels[v]==label,directed=False)
+        for v in trama.vertices():
+            id_trama[g.edge(int(trama.vp.pares[v][0]),int(trama.vp.pares[v][1]))]=cur_trama
+        cur_trama+=1
+
+    # A continuación sacamos componentes conexas negativas -> Más tramas
+    hv = gt.GraphView(h.copy(),vfilt=lambda v:h.vp.new_peso[v]<0,directed=False)
+    hv.purge_vertices()
+    hv.purge_edges()
+    labels = gt.label_components(hv)[0]
+    for label in np.unique(labels.a):
+        trama = gt.GraphView(hv.copy(),vfilt=lambda v:labels[v]==label,directed=False)
+        for v in trama.vertices():
+            id_trama[g.edge(int(trama.vp.pares[v][0]),int(trama.vp.pares[v][1]))]=cur_trama
+        cur_trama+=1
+
+
+    # Ahora hay que pasar de arcos a nodos, filtramos el grafo original por arcos.
+    # Los nodos que nos queden, pertenecen a esa trama
+    for t in np.unique(id_trama.a):
+        gv = gt.GraphView(g.copy(),efilt=lambda e:id_trama[e]==t,directed=False)
+        gv.purge_edges()
+        gv.purge_vertices()
+        gv = gt.GraphView(gv.copy(),vfilt=lambda v: v.out_degree()>0,directed=False)
+
+        for v in gv.vertices():
+            if(id_trama_pie_color[g.vertex(v)]==None):
+                id_trama_pie_color[g.vertex(v)]=[]
+            id_trama_pie_color[g.vertex(v)].append(colors[t%len(colors)])
+            id_trama_vert[g.vertex(v)]=t
+        print("----")
+
+    for v in g.vertices():
+        for _ in id_trama_pie_color[g.vertex(v)]:
+            id_trama_pie_prop[g.vertex(v)].append(1.0/len(id_trama_pie_color[g.vertex(v)]))
+    gt.graph_draw(g,vertex_text=g.vp.etiqueta_nodo,
+                  vertex_shape="pie",
+                  vertex_pie_fractions=id_trama_pie_prop,
+                  vertex_pie_colors=id_trama_pie_color,vertex_size=8,
+                  edge_text=g.ep.etiqueta_arco)
+    gt.graph_draw(g,vertex_text=g.vp.etiqueta_nodo,
+                  vertex_fill_color=id_trama_vert,
+                  vertex_size=8,
+                  edge_text=g.ep.etiqueta_arco)
+
+  
 def main():
     g = load_graph(type='graph3')
     print(g)
-#    s0 = time.time()
-#    h = grafo_dual(g)
-#    s = time.time()
-#    print(h)
-#    print('{0}s'.format(s-s0))
     s0 = time.time()
     h = build_inducido(g, "etiqueta_nodo", "peso_arco")
     s = time.time()
     print(h)
     print('{0}s'.format(s-s0))
+    # kernel = LoG(11,1.4)
+    # h2 = grafo_filtrado(h, kernel)
+    # get_tramas(g, h2)
 
 if __name__ == '__main__':
     main()
